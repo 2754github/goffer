@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -396,6 +397,86 @@ func Test_buffer_Close(t *testing.T) {
 			check(t, b, tt.wantBuffer)
 		})
 	}
+}
+
+func TestE2E(t *testing.T) {
+	t.Run("should error without panic if Publish is called after Close", func(t *testing.T) {
+		b := New[Item](3)
+		defer b.Close()
+
+		b.Close()
+		err := b.Publish(0)
+
+		if want := ErrClosed; !errors.Is(err, want) {
+			t.Errorf("buffer.Publish() error = %v, want %v", err, want)
+		}
+	})
+
+	t.Run("should error if Publish is called before Subscribe", func(t *testing.T) {
+		b := New[Item](3)
+		defer b.Close()
+
+		err := b.Publish(0)
+
+		if want := ErrNotSubscribed; !errors.Is(err, want) {
+			t.Errorf("buffer.Publish() error = %v, want %v", err, want)
+		}
+	})
+
+	t.Run("basic use case check", func(t *testing.T) {
+		b := New[Item](3)
+		defer b.Close()
+
+		got := make([][]Item, 0, 2)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go (func() {
+			for items := range b.Subscribe() {
+				got = append(got, items)
+				wg.Done()
+			}
+		})()
+
+		for i := range 5 {
+			for b.Publish(Item(i)) != nil {
+			}
+		}
+
+		wg.Wait()
+		got = append(got, b.Pull())
+
+		if want := [][]Item{{0, 1, 2}, {3, 4}}; !reflect.DeepEqual(got, want) {
+			t.Errorf("got = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("should allow if Pull is called after Close", func(t *testing.T) {
+		b := New[Item](3)
+		defer b.Close()
+
+		go (func() {
+			for range b.Subscribe() {
+			}
+		})()
+
+		for b.Publish(0) != nil {
+		}
+
+		b.Close()
+		got := b.Pull()
+
+		if want := []Item{0}; !reflect.DeepEqual(got, want) {
+			t.Errorf("buffer.Pull() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("should not panic if Close is called multiple times", func(t *testing.T) {
+		b := New[Item](3)
+		defer b.Close()
+
+		b.Close()
+		b.Close()
+	})
 }
 
 func itemsWithCap(items []Item, cap int) []Item {

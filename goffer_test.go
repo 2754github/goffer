@@ -1,8 +1,14 @@
 package goffer
 
 import (
+	"errors"
+	"fmt"
+	"math"
 	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 type Item int
@@ -23,13 +29,72 @@ func TestNew(t *testing.T) {
 		args args
 		want *buffer[Item]
 	}{
-		// TODO: Add test cases.
+		{
+			name: "size == -1",
+			args: args{
+				size: -1,
+			},
+			want: &buffer[Item]{
+				size:            1,
+				items:           make([]Item, 0, 1),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "size == 0",
+			args: args{
+				size: 0,
+			},
+			want: &buffer[Item]{
+				size:            1,
+				items:           make([]Item, 0, 1),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "size == 1",
+			args: args{
+				size: 1,
+			},
+			want: &buffer[Item]{
+				size:            1,
+				items:           make([]Item, 0, 1),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "size == 2",
+			args: args{
+				size: 2,
+			},
+			want: &buffer[Item]{
+				size:            2,
+				items:           make([]Item, 0, 2),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
+		{
+			name: fmt.Sprintf("size == %d", math.MaxInt32),
+			args: args{
+				size: math.MaxInt32,
+			},
+			want: &buffer[Item]{
+				size:            math.MaxInt32,
+				items:           make([]Item, 0, math.MaxInt32),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := New[Item](tt.args.size); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("New() = %v, want %v", got, tt.want)
-			}
+			got := New[Item](tt.args.size).(*buffer[Item])
+
+			check(t, got, tt.want)
 		})
 	}
 }
@@ -39,12 +104,88 @@ func Test_buffer_Publish(t *testing.T) {
 		item Item
 	}
 	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
+		name       string
+		fields     fields
+		args       args
+		want       error
+		wantBuffer *buffer[Item]
 	}{
-		// TODO: Add test cases.
+		{
+			name: "buffer is closed",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+			args: args{
+				item: 0,
+			},
+			want: ErrClosed,
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+		},
+		{
+			name: "buffer is not subscribed",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+			args: args{
+				item: 0,
+			},
+			want: ErrNotSubscribed,
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "buffer is not full",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+			args: args{
+				item: 0,
+			},
+			want: nil,
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{0, 0}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "buffer fills up",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0, 0}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+			args: args{
+				item: 0,
+			},
+			want: nil,
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,20 +196,54 @@ func Test_buffer_Publish(t *testing.T) {
 				isNotSubscribed: tt.fields.isNotSubscribed,
 				isClosed:        tt.fields.isClosed,
 			}
-			if err := b.Publish(tt.args.item); (err != nil) != tt.wantErr {
-				t.Errorf("buffer.Publish() error = %v, wantErr %v", err, tt.wantErr)
+			if err := b.Publish(tt.args.item); !errors.Is(err, tt.want) {
+				t.Errorf("buffer.Publish() error = %v, want %v", err, tt.want)
 			}
+
+			check(t, b, tt.wantBuffer)
 		})
 	}
 }
 
 func Test_buffer_Subscribe(t *testing.T) {
 	tests := []struct {
-		name   string
-		fields fields
-		want   <-chan []Item
+		name       string
+		fields     fields
+		want       []Item
+		wantBuffer *buffer[Item]
 	}{
-		// TODO: Add test cases.
+		{
+			name: "buffer is not full",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+			want: nil,
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{0, 0}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "buffer fills up",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0, 0}, 3),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+			want: []Item{0, 0, 0},
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,20 +254,78 @@ func Test_buffer_Subscribe(t *testing.T) {
 				isNotSubscribed: tt.fields.isNotSubscribed,
 				isClosed:        tt.fields.isClosed,
 			}
-			if got := b.Subscribe(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("buffer.Subscribe() = %v, want %v", got, tt.want)
+
+			go (func() {
+				for got := range b.Subscribe() {
+					if !reflect.DeepEqual(got, tt.want) {
+						t.Errorf("buffer.Subscribe() = %v, want %v", got, tt.want)
+					}
+				}
+			})()
+
+			for b.Publish(0) != nil {
 			}
+
+			check(t, b, tt.wantBuffer)
 		})
 	}
 }
 
 func Test_buffer_Pull(t *testing.T) {
 	tests := []struct {
-		name   string
-		fields fields
-		want   []Item
+		name       string
+		fields     fields
+		want       []Item
+		wantBuffer *buffer[Item]
 	}{
-		// TODO: Add test cases.
+		{
+			name: "buffer is closed",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+			want: []Item{0},
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+		},
+		{
+			name: "buffer is not subscribed",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+			want: []Item{},
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: true,
+				isClosed:        false,
+			},
+		},
+		{
+			name: "buffer is not full",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+			want: []Item{0},
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,16 +339,48 @@ func Test_buffer_Pull(t *testing.T) {
 			if got := b.Pull(); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buffer.Pull() = %v, want %v", got, tt.want)
 			}
+
+			check(t, b, tt.wantBuffer)
 		})
 	}
 }
 
 func Test_buffer_Close(t *testing.T) {
 	tests := []struct {
-		name   string
-		fields fields
+		name       string
+		fields     fields
+		wantBuffer *buffer[Item]
 	}{
-		// TODO: Add test cases.
+		{
+			name: "buffer is closed",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+		},
+		{
+			name: "buffer is open",
+			fields: fields{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        false,
+			},
+			wantBuffer: &buffer[Item]{
+				size:            3,
+				items:           itemsWithCap([]Item{0}, 3),
+				isNotSubscribed: false,
+				isClosed:        true,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,6 +392,34 @@ func Test_buffer_Close(t *testing.T) {
 				isClosed:        tt.fields.isClosed,
 			}
 			b.Close()
+
+			check(t, b, tt.wantBuffer)
 		})
+	}
+}
+
+func itemsWithCap(items []Item, cap int) []Item {
+	r := make([]Item, len(items), cap)
+	copy(r, items)
+
+	return r
+}
+
+func check(t *testing.T, got *buffer[Item], want *buffer[Item]) {
+	if diff := cmp.Diff(
+		got,
+		want,
+		cmp.AllowUnexported(buffer[Item]{}),
+		cmpopts.IgnoreFields(buffer[Item]{}, "mu", "subscriber"),
+	); diff != "" {
+		t.Error(diff)
+	}
+
+	if cap(got.items) != cap(want.items) {
+		t.Errorf("cap(got.items) = %v, want %v", cap(got.items), cap(want.items))
+	}
+
+	if cap(got.subscriber) != 1 {
+		t.Errorf("cap(got.subscriber) = %v, want %v", cap(got.subscriber), 1)
 	}
 }

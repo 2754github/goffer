@@ -1,4 +1,4 @@
-// Package goffer provides an interface to pub/sub based buffers.
+// Package goffer provides an interface for Pub/Sub buffer.
 package goffer
 
 import (
